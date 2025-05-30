@@ -3,6 +3,7 @@ import unittest
 
 import boto3
 import sqlalchemy as sa
+from botocore.exceptions import ClientError
 from sqlalchemy.dialects import registry
 from types_boto3_dynamodb import DynamoDBClient
 from types_boto3_dynamodb.service_resource import DynamoDBServiceResource, Table
@@ -10,138 +11,480 @@ from types_boto3_dynamodb.service_resource import DynamoDBServiceResource, Table
 registry.register("dynamodb", "sqla.dynamodb.dialect", "DynamoDialect")
 
 
+def _now():
+    return dt.datetime.now(dt.UTC).isoformat()
+
+
 class Mixin(unittest.TestCase):
-    dy_table: Table
-    dy_client: DynamoDBClient
-    dy_resource: DynamoDBServiceResource
+    client: DynamoDBClient
+    resource: DynamoDBServiceResource
 
     def setUp(self):
-        self.dy_client = boto3.client(
-            "dynamodb",
-            endpoint_url="http://localhost:4566",
-        )
-
-        self.dy_resource = boto3.resource(
-            "dynamodb",
-            endpoint_url="http://localhost:4566",
-        )
-
-        time = dt.datetime.now(dt.UTC).isoformat()
-        time = time.replace(":", "-")
-        time = time.replace("+", "-")
-        self.dy_table = self.dy_resource.create_table(
-            TableName=f"test-{time}",
-            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
-            ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
-        )
-        self.dy_table.wait_until_exists()
-
-    def dy_get(self, id: str):
-        return self.dy_table.get_item(Key={"id": id})["Item"]
-
-    def dy_scan(self):
-        return self.dy_table.scan()["Items"]
-
-    def dy_count(self):
-        return len(self.dy_scan())
-
-    def dy_insert(self, id: str):
-        self.dy_table.put_item(Item={"id": id})
+        super().setUp()
+        ENDPOINT_URL = "http://localhost:4566"
+        self.client = boto3.client("dynamodb", endpoint_url=ENDPOINT_URL)
+        self.resource = boto3.resource("dynamodb", endpoint_url=ENDPOINT_URL)
 
 
-class TestDynamo(Mixin, unittest.TestCase):
-    sa_engine: sa.Engine
-    sa_table: sa.Table
-    sa_metadata: sa.MetaData
+class TestDynamoSimple(Mixin, unittest.TestCase):
+    """Tests the simple case of a table with a single primary key"""
+
+    stable: sa.Table
+    dtable: Table
+    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
 
-        self.sa_engine = sa.create_engine("dynamodb://")
-        self.sa_metadata = sa.MetaData()
-        self.sa_table = sa.Table(
-            self.dy_table.name,
-            self.sa_metadata,
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        self.client.create_table(
+            TableName=name,
+            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
+        )
+
+        self.dtable = self.resource.Table(name)
+
+        self.stable = sa.Table(
+            name,
+            sa.MetaData(),
             sa.Column("id", sa.String, primary_key=True),
         )
 
-    def test_insert_one(self):
-        dy_count = self.dy_count()
+        self.client.get_waiter("table_exists").wait(TableName=name)
+        self.engine = sa.create_engine("dynamodb://")
 
-        with self.sa_engine.connect() as conn:
-            q = sa.insert(self.sa_table).values(id="1")
+    def tearDown(self):
+        self.dtable.delete()
+
+    def test_insert_one(self):
+        with self.engine.connect() as conn:
+            q = sa.insert(self.stable).values(id="1")
             conn.execute(q)
 
-        dy_count_after = self.dy_count()
-        self.assertEqual(dy_count_after, dy_count + 1)
-
-        dy_item = self.dy_get("1")
-        self.assertDictEqual(dy_item, {"id": "1"})
+        items = self.dtable.scan()["Items"]
+        self.assertListEqual(items, [{"id": "1"}])
 
     def test_insert_many(self):
-        dy_count = self.dy_count()
+        with self.engine.connect() as conn:
+            q = sa.insert(self.stable).values(id="1")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="2")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="3")
+            conn.execute(q)
 
-        with self.sa_engine.connect() as conn:
-            for i in range(10):
-                q = sa.insert(self.sa_table).values(id=str(i))
-                conn.execute(q)
+        items = self.dtable.scan()["Items"]
+        items.sort(key=lambda x: x["id"])  # type: ignore
+        self.assertListEqual(items, [{"id": "1"}, {"id": "2"}, {"id": "3"}])
 
-        dy_count_after = self.dy_count()
-        self.assertEqual(dy_count_after, dy_count + 10)
 
-        dy_items = self.dy_scan()
-        dy_items = sorted(dy_items, key=lambda x: x["id"])
-        dy_expected = [{"id": str(i)} for i in range(10)]
-        self.assertListEqual(dy_items, dy_expected)
+class TestDynamoHashWithAttributes(Mixin, unittest.TestCase):
+    """Tests the case of a table with a primary key and other attributes"""
 
-    def test_select_one(self):
-        with self.sa_engine.connect() as conn:
-            q1 = sa.insert(self.sa_table).values(id="1")
-            conn.execute(q1)
+    stable: sa.Table
+    dtable: Table
+    engine: sa.Engine
 
-            q2 = sa.select(self.sa_table)
-            result = conn.execute(q2)
-            sa_items = result.fetchall()
-            self.assertListEqual(list(sa_items), [("1",)])
+    def setUp(self):
+        super().setUp()
 
-        dy_item = self.dy_table.get_item(Key={"id": "1"})
-        dy_item = dy_item["Item"]
-        self.assertEqual(dy_item["id"], "1")
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
 
-    def test_select_many(self):
-        with self.sa_engine.connect() as conn:
-            for i in range(10):
-                q1 = sa.insert(self.sa_table).values(id=str(i))
-                conn.execute(q1)
+        self.client.create_table(
+            TableName=name,
+            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
+        )
 
-            q2 = sa.select(self.sa_table)
-            result = conn.execute(q2)
-            sa_items = result.fetchall()
+        self.dtable = self.resource.Table(name)
+        self.dtable.wait_until_exists()
 
-            sa_items = sorted(sa_items, key=lambda x: x[0])
-            sa_expected = [(str(i),) for i in range(10)]
-            self.assertListEqual(sa_items, sa_expected)
+        self.stable = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("name", sa.String),
+        )
 
-        dy_items = self.dy_table.scan()
-        dy_items = dy_items["Items"]
-        dy_items = sorted(dy_items, key=lambda x: str(x["id"]))
-        dy_expected = [{"id": str(i)} for i in range(10)]
-        self.assertListEqual(dy_items, dy_expected)
+        self.engine = sa.create_engine("dynamodb://")
 
-    def test_select_where_by_id(self):
-        with self.sa_engine.connect() as conn:
-            for i in range(10):
-                q1 = sa.insert(self.sa_table).values(id=str(i))
-                conn.execute(q1)
+    def tearDown(self):
+        self.dtable.delete()
+        self.dtable.wait_until_not_exists()
 
-            for i in range(10):
-                q2 = sa.select(self.sa_table).where(self.sa_table.c.id == str(i))
-                result = conn.execute(q2)
-                sa_items = result.fetchall()
-                self.assertListEqual(list(sa_items), [(str(i),)])
+    def test_insert_one(self):
+        with self.engine.connect() as conn:
+            q = sa.insert(self.stable).values(id="1", name="John")
+            conn.execute(q)
 
-        dy_items = self.dy_scan()
-        dy_items = sorted(dy_items, key=lambda x: str(x["id"]))
-        dy_expected = [{"id": str(i)} for i in range(10)]
-        self.assertListEqual(dy_items, dy_expected)
+        items = self.dtable.scan()["Items"]
+        self.assertListEqual(items, [{"id": "1", "name": "John"}])
+
+    def test_insert_many(self):
+        with self.engine.connect() as conn:
+            q = sa.insert(self.stable).values(id="1", name="John")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="2", name="Jane")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="3", name="Jim")
+            conn.execute(q)
+
+        items = self.dtable.scan()["Items"]
+        items.sort(key=lambda x: x["id"])  # type: ignore
+        self.assertListEqual(
+            items,
+            [
+                {"id": "1", "name": "John"},
+                {"id": "2", "name": "Jane"},
+                {"id": "3", "name": "Jim"},
+            ],
+        )
+
+
+class TestDynamoHashRange(Mixin, unittest.TestCase):
+    """Tests the case of a table with a hash and range key"""
+
+    stable: sa.Table
+    dtable: Table
+    engine: sa.Engine
+
+    def setUp(self):
+        super().setUp()
+
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        self.client.create_table(
+            TableName=name,
+            KeySchema=[
+                {"AttributeName": "id", "KeyType": "HASH"},
+                {"AttributeName": "ts", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "id", "AttributeType": "S"},
+                {"AttributeName": "ts", "AttributeType": "S"},
+            ],
+            ProvisionedThroughput={
+                "ReadCapacityUnits": 1,
+                "WriteCapacityUnits": 1,
+            },
+        )
+
+        self.dtable = self.resource.Table(name)
+        self.dtable.wait_until_exists()
+
+        self.stable = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("ts", sa.String, primary_key=True),
+        )
+
+        self.engine = sa.create_engine("dynamodb://")
+
+    def tearDown(self):
+        self.dtable.delete()
+        self.dtable.wait_until_not_exists()
+
+    def test_insert_one(self):
+        with self.engine.connect() as conn:
+            ts = _now()
+            q = sa.insert(self.stable).values(id="1", ts=ts)
+            conn.execute(q)
+
+        items = self.dtable.scan()["Items"]
+        self.assertListEqual(items, [{"id": "1", "ts": ts}])
+
+    def test_insert_many(self):
+        with self.engine.connect() as conn:
+            ts = _now()
+            q = sa.insert(self.stable).values(id="1", ts=ts)
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="2", ts=ts)
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="3", ts=ts)
+            conn.execute(q)
+
+        items = self.dtable.scan()["Items"]
+        items.sort(key=lambda x: x["id"])  # type: ignore
+        self.assertListEqual(
+            items,
+            [
+                {"id": "1", "ts": ts},
+                {"id": "2", "ts": ts},
+                {"id": "3", "ts": ts},
+            ],
+        )
+
+
+class TestDynamoHashRangeWithAttributes(Mixin, unittest.TestCase):
+    """Tests the case of a table with a hash and range key and attributes"""
+
+    stable: sa.Table
+    dtable: Table
+    engine: sa.Engine
+
+    def setUp(self):
+        super().setUp()
+
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        self.client.create_table(
+            TableName=name,
+            KeySchema=[
+                {"AttributeName": "id", "KeyType": "HASH"},
+                {"AttributeName": "ts", "KeyType": "RANGE"},
+            ],
+            AttributeDefinitions=[
+                {"AttributeName": "id", "AttributeType": "S"},
+                {"AttributeName": "ts", "AttributeType": "S"},
+            ],
+            ProvisionedThroughput={
+                "ReadCapacityUnits": 1,
+                "WriteCapacityUnits": 1,
+            },
+        )
+
+        self.dtable = self.resource.Table(name)
+        self.dtable.wait_until_exists()
+
+        self.stable = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("ts", sa.String, primary_key=True),
+            sa.Column("name", sa.String),
+        )
+
+        self.engine = sa.create_engine("dynamodb://")
+
+    def tearDown(self):
+        self.dtable.delete()
+        self.dtable.wait_until_not_exists()
+
+    def test_insert_one(self):
+        with self.engine.connect() as conn:
+            ts = _now()
+            q = sa.insert(self.stable).values(id="1", ts=ts, name="John")
+            conn.execute(q)
+
+        items = self.dtable.scan()["Items"]
+        self.assertListEqual(items, [{"id": "1", "ts": ts, "name": "John"}])
+
+    def test_insert_many(self):
+        with self.engine.connect() as conn:
+            ts = _now()
+            q = sa.insert(self.stable).values(id="1", ts=ts, name="John")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="2", ts=ts, name="Jane")
+            conn.execute(q)
+            q = sa.insert(self.stable).values(id="3", ts=ts, name="Jim")
+            conn.execute(q)
+
+        items = self.dtable.scan()["Items"]
+        items.sort(key=lambda x: x["id"])  # type: ignore
+        self.assertListEqual(
+            items,
+            [
+                {"id": "1", "ts": ts, "name": "John"},
+                {"id": "2", "ts": ts, "name": "Jane"},
+                {"id": "3", "ts": ts, "name": "Jim"},
+            ],
+        )
+
+
+class TestMeta(Mixin, unittest.TestCase):
+    """Tests the case of a table with a hash and range key and attributes"""
+
+    engine: sa.Engine
+
+    def setUp(self):
+        super().setUp()
+        self.engine = sa.create_engine("dynamodb://")
+
+    def test_create(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        table = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+        )
+
+        table.create(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [{"AttributeName": "id", "KeyType": "HASH"}],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [{"AttributeName": "id", "AttributeType": "S"}],
+        )
+
+    def test_delete(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        table = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+        )
+        table.create(self.engine)
+        table.drop(self.engine)
+
+        with self.assertRaises(ClientError) as e:
+            self.resource.Table(name).load()
+
+        self.assertIn("ResourceNotFoundException", str(e.exception))
+        self.assertIn("Cannot do operations on a non-existent table", str(e.exception))
+
+    def test_create_hash_table(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(name, meta, sa.Column("id", sa.String, primary_key=True))
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [{"AttributeName": "id", "KeyType": "HASH"}],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [{"AttributeName": "id", "AttributeType": "S"}],
+        )
+
+    def test_create_hash_range_table(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(
+            name,
+            meta,
+            # order matters!
+            sa.Column("ts", sa.String, primary_key=True),
+            sa.Column("id", sa.String, primary_key=True),
+        )
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [
+                {"AttributeName": "ts", "KeyType": "HASH"},
+                {"AttributeName": "id", "KeyType": "RANGE"},
+            ],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [
+                {"AttributeName": "ts", "AttributeType": "S"},
+                {"AttributeName": "id", "AttributeType": "S"},
+            ],
+        )
+
+    def test_create_table_hash_with_attributes(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(
+            name,
+            meta,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("name", sa.String),
+        )
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [{"AttributeName": "id", "KeyType": "HASH"}],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [{"AttributeName": "id", "AttributeType": "S"}],
+        )
+
+    def test_create_table_hash_range_with_attributes(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(
+            name,
+            meta,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("ts", sa.String, primary_key=True),
+            sa.Column("name1", sa.String),
+            sa.Column("name2", sa.String),
+            sa.Column("name3", sa.String),
+            sa.Column("name4", sa.String),
+            sa.Column("name5", sa.String),
+        )
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [
+                {"AttributeName": "id", "KeyType": "HASH"},
+                {"AttributeName": "ts", "KeyType": "RANGE"},
+            ],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [
+                {"AttributeName": "id", "AttributeType": "S"},
+                {"AttributeName": "ts", "AttributeType": "S"},
+            ],
+        )

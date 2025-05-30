@@ -3,12 +3,11 @@ import logging
 
 import boto3
 import sqlalchemy as sa
+import sqlalchemy.sql as sql
 from sqlalchemy.engine import default
-from sqlalchemy.sql import compiler
 from types_boto3_dynamodb.type_defs import (
     CreateTableInputTypeDef,
-    ExecuteStatementInputTypeDef,
-    PutItemInputTypeDef,
+    DeleteTableInputTypeDef,
 )
 
 from . import dbapi
@@ -19,25 +18,35 @@ dynamodb = boto3.resource("dynamodb", endpoint_url="http://localhost:4566")
 table = dynamodb.Table("TEST_TABLE")
 
 
-class DynamoCompiler(compiler.SQLCompiler):
+class DynamoCompiler(sql.compiler.SQLCompiler):
     def visit_insert(self, insert: sa.Insert, **kwargs) -> str:
         """
         The result of this method is going to be passed, as is, to the
         `cursor.execute()` method.
         """
         logger.info("visit_insert() called")
+        logger.debug("kwargs=%r", kwargs)
 
-        item = {}
-        for k, v in insert._values.items():
-            v: sa.BindParameter = v
-            item[k] = {"S": str(v.value)}
+        # copied from superclass
+        state = insert._compile_state_factory(insert, self)
+        insert = state.statement
 
-        data: PutItemInputTypeDef = {
-            "TableName": insert.table.name,
-            "Item": item,
-        }
+        # copied from superclass
+        params = sql.compiler.crud._get_crud_params(
+            compiler=self,
+            stmt=insert,
+            compile_state=state,
+            toplevel=True,
+            **kwargs,
+        )
+        logger.debug("params=%r", params)
 
-        return json.dumps(data)
+        # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ? }
+        query = f'INSERT INTO "{insert.table.name}" VALUE {{ '
+        values = ", ".join(f"'{name}': ?" for _, name, _, _ in params.single_params)
+        query += f"{values} }}"
+
+        return query
 
     def visit_column(self, column: sa.Column, **kwargs) -> str:
         logger.info("visit_column() called")
@@ -46,61 +55,48 @@ class DynamoCompiler(compiler.SQLCompiler):
         kwargs["include_table"] = False
         return super().visit_column(column, **kwargs)
 
-    def visit_bindparam(self, bindparam: sa.BindParameter, **kwargs) -> str:
-        logger.info("visit_bindparam() called")
-        # very bad implementation, but it works for now
-        # EG: ":id" -> "1"
-        return repr(bindparam.value)
+    def visit_values(self, element, asfrom=False, from_linter=None, **kw):
+        logger.info("visit_values() called")
+        return super().visit_values(element, asfrom, from_linter, **kw)
 
     def visit_select(self, select: sa.Select, **kwargs) -> str:
         logger.info("visit_select() called")
-        select = super().visit_select(select, **kwargs)
-
-        data: ExecuteStatementInputTypeDef = {
-            "Statement": str(select),
-        }
-
-        return json.dumps(data)
+        return super().visit_select(select, **kwargs)
 
 
-class DynamoDDLCompiler(compiler.DDLCompiler):
+class DynamoDDLCompiler(sql.compiler.DDLCompiler):
     def visit_create_table(self, create: sa.schema.CreateTable, **kwargs) -> str:
         logger.info("visit_create_table() called")
-
-        # Map SQLAlchemy types to DynamoDB types
-        def _type(coltype):
-            if isinstance(coltype, sa.String):
-                return "S"
-            elif isinstance(coltype, (sa.Integer, sa.Float, sa.Numeric)):
-                return "N"
-            elif isinstance(coltype, sa.LargeBinary):
-                return "B"
-            else:
-                return "S"  # Default fallback
 
         # Extract columns and PKs
         columns: list[sa.Column] = list(create.target.columns)
         pk_columns = [col for col in columns if col.primary_key]
-        logger.debug("pk_columns=%s", pk_columns)
         assert len(pk_columns) > 0, "DynamoDB requires at least one primary key"
         assert len(pk_columns) < 3, "DynamoDB only supports up to 2 primary keys"
 
-        pk = pk_columns[0]
-        rg = pk_columns[1] if len(pk_columns) > 1 else None
+        TYPES = {
+            sa.String: "S",
+        }
 
-        pkt = _type(pk.type)
-        rgt = _type(rg.type) if rg else None
+        if len(pk_columns) == 1:
+            pk = pk_columns[0]
+            pkt = TYPES[type(pk.type)]
+            key_schema = [{"AttributeName": pk.name, "KeyType": "HASH"}]
+            attr_schema = [{"AttributeName": pk.name, "AttributeType": pkt}]
 
-        key_schema = [{"AttributeName": pk.name, "KeyType": "HASH"}]
-        attr_schema = [{"AttributeName": pk.name, "AttributeType": pkt}]
-        if rg:
-            key_schema.append({"AttributeName": rg.name, "KeyType": "RANGE"})
-            attr_schema.append({"AttributeName": rg.name, "AttributeType": rgt})
-
-        table: sa.Table = create.target
+        if len(pk_columns) == 2:
+            hk, rk = pk_columns
+            key_schema = [
+                {"AttributeName": hk.name, "KeyType": "HASH"},
+                {"AttributeName": rk.name, "KeyType": "RANGE"},
+            ]
+            attr_schema = [
+                {"AttributeName": hk.name, "AttributeType": TYPES[type(hk.type)]},
+                {"AttributeName": rk.name, "AttributeType": TYPES[type(rk.type)]},
+            ]
 
         data: CreateTableInputTypeDef = {
-            "TableName": table.name,
+            "TableName": create.target.name,
             "KeySchema": key_schema,
             "AttributeDefinitions": attr_schema,
             "ProvisionedThroughput": {
@@ -111,22 +107,37 @@ class DynamoDDLCompiler(compiler.DDLCompiler):
 
         return json.dumps(data)
 
+    def visit_drop_table(self, drop: sa.schema.DropTable, **kw):
+        logger.info("visit_drop_table() called")
+
+        data: DeleteTableInputTypeDef = {
+            "TableName": drop.target.name,
+        }
+
+        return json.dumps(data)
+
     def get_column_specification(self, column, **kwargs):
         logger.info("get_column_specification() called")
         return super().get_column_specification(column, **kwargs)
 
 
+class DynamoIdent(sql.compiler.IdentifierPreparer):
+    pass
+
+
 class DynamoDialect(default.DefaultDialect):
-    name = "dynamo"
+    name = "dynamodb"
     driver = "dynamodriver"
     dbapi_class = dbapi
+
+    preparer = DynamoIdent
 
     ddl_compiler = DynamoDDLCompiler
     statement_compiler = DynamoCompiler
 
     supports_statement_cache = False
     supports_schemas = False
-    supports_alter = True
+    # supports_alter = True
 
     @classmethod
     def import_dbapi(cls):

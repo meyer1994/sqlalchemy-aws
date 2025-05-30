@@ -1,11 +1,14 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple, TypedDict
+from typing import Any, NamedTuple
 
 import boto3
 import sqlalchemy as sa
 from pydantic import TypeAdapter, ValidationError
-from types_boto3_dynamodb.type_defs import CreateTableInputTypeDef
+from types_boto3_dynamodb.type_defs import (
+    CreateTableInputTypeDef,
+    DeleteTableInputTypeDef,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,20 +65,6 @@ class Connection:
         logger.info("Connection.rollback() called")
 
 
-class _Execute(TypedDict):
-    Statement: str
-
-
-class _Insert(TypedDict):
-    TableName: str
-    Item: dict[str, Any]
-
-
-_CreateAdapter = TypeAdapter(CreateTableInputTypeDef)
-_ExecuteAdapter = TypeAdapter(_Execute)
-_InsertAdapter = TypeAdapter(_Insert)
-
-
 class Description(NamedTuple):
     name: str
     type_code: type[str | int | bool] | None
@@ -105,6 +94,10 @@ class Description(NamedTuple):
         )
 
 
+_CreateAdapter = TypeAdapter(CreateTableInputTypeDef)
+_DropAdapter = TypeAdapter(DeleteTableInputTypeDef)
+
+
 @dataclass
 class Cursor:
     connection: Connection
@@ -130,35 +123,35 @@ class Cursor:
         logger.debug("kwargs=%s", kwargs)
 
         try:
-            res_create = _CreateAdapter.validate_json(sql)
-            # do not return anything nor alter the state of the cursor
-            dynamodbc.create_table(**res_create)
+            in_create = _CreateAdapter.validate_json(sql)
+            dynamodbc.create_table(**in_create)
             return self._results
         except ValidationError:
             logger.info("Not a create table statement")
-            pass
 
         try:
-            in_insert = _InsertAdapter.validate_json(sql)
-            out_insert = dynamodbc.put_item(**in_insert)
-            self._update_description(out_insert)  # type: ignore
-            self._update_cursor(out_insert)  # type: ignore
+            in_drop = _DropAdapter.validate_json(sql)
+            dynamodbc.delete_table(**in_drop)
             return self._results
         except ValidationError:
-            logger.info("Not an insert statement")
-            pass
+            logger.info("Not a drop table statement")
 
-        try:
-            in_execute = _ExecuteAdapter.validate_json(sql)
-            out_execute = dynamodbc.execute_statement(**in_execute)
-            self._update_description(out_execute)  # type: ignore
-            self._update_cursor(out_execute)  # type: ignore
-            return self._results
-        except ValidationError:
-            logger.info("Not an execute statement")
-            pass
+        TYPES = {
+            str: "S",
+            int: "N",
+            bool: "BOOL",
+            None: "NULL",
+        }
 
-        raise Error(f"Invalid SQL: {sql}")
+        params: list[dict[str, Any]] = []
+        for _, v in parameters.items():
+            key = TYPES[type(v)]
+            params.append({key: v})
+
+        response = dynamodbc.execute_statement(Statement=sql, Parameters=params)
+        self._update_description(response)  # type: ignore
+        self._update_cursor(response)  # type: ignore
+        return self._results
 
     def _update_cursor(self, response: dict[str, Any]):
         items = response.get("Items", [])
@@ -180,8 +173,6 @@ class Cursor:
                     break  # just the first item is enough
             break  # just the first item is enough
 
-        print(descs)
-        print("=" * 5)
         self.description = descs
 
     def fetchone(self):
