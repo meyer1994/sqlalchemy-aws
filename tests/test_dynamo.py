@@ -488,3 +488,66 @@ class TestMeta(Mixin, unittest.TestCase):
                 {"AttributeName": "ts", "AttributeType": "S"},
             ],
         )
+
+
+class TestSelect(Mixin, unittest.TestCase):
+    """Tests the case of a table with a hash and range key and attributes"""
+
+    stable: sa.Table
+    dtable: Table
+    engine: sa.Engine
+
+    def setUp(self):
+        super().setUp()
+
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        self.client.create_table(
+            TableName=name,
+            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
+        )
+
+        self.dtable = self.resource.Table(name)
+        self.dtable.wait_until_exists()
+
+        self.stable = sa.Table(
+            name,
+            sa.MetaData(),
+            sa.Column("id", sa.String, primary_key=True),
+        )
+
+        self.engine = sa.create_engine("dynamodb://")
+
+    def tearDown(self):
+        self.dtable.delete()
+        self.dtable.wait_until_not_exists()
+
+    def test_select_all(self):
+        self.dtable.put_item(Item={"id": "1"})
+        self.dtable.put_item(Item={"id": "2"})
+        self.dtable.put_item(Item={"id": "3"})
+
+        with self.engine.connect() as conn:
+            q = sa.select(self.stable)
+            result = conn.execute(q)
+            result = sorted(result)
+
+        items = [i._asdict() for i in result]
+        self.assertListEqual(items, [{"id": "1"}, {"id": "2"}, {"id": "3"}])
+
+    def test_select_one(self):
+        self.dtable.put_item(Item={"id": "1"})
+        self.dtable.put_item(Item={"id": "2"})
+        self.dtable.put_item(Item={"id": "3"})
+
+        with self.engine.connect() as conn:
+            q = sa.select(self.stable).where(self.stable.c.id == "1")
+            result = conn.execute(q)
+            result = sorted(result)
+
+        items = [i._asdict() for i in result]
+        self.assertListEqual(items, [{"id": "1"}])

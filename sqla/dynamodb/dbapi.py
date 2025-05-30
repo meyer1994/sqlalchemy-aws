@@ -20,6 +20,10 @@ table = dynamodb.Table("TEST_TABLE")
 Error = Exception
 InterfaceError = Exception
 
+apilevel = "2.0"
+threadsafety = 1
+paramstyle = "pyformat"
+
 
 def unwrap(value: Any):
     res: dict[str, Any] = {}
@@ -119,8 +123,9 @@ class Cursor:
 
     def execute(self, sql, parameters=None, **kwargs):
         logger.info("Cursor.execute() called")
-        logger.debug("sql=%s", sql)
-        logger.debug("kwargs=%s", kwargs)
+        print("SQL:", sql)
+        print("PARAMS:", parameters)
+        print("KWARGS:", kwargs)
 
         try:
             in_create = _CreateAdapter.validate_json(sql)
@@ -148,7 +153,11 @@ class Cursor:
             key = TYPES[type(v)]
             params.append({key: v})
 
-        response = dynamodbc.execute_statement(Statement=sql, Parameters=params)
+        if len(params) == 0:
+            response = dynamodbc.execute_statement(Statement=sql)
+        else:
+            response = dynamodbc.execute_statement(Statement=sql, Parameters=params)
+
         self._update_description(response)  # type: ignore
         self._update_cursor(response)  # type: ignore
         return self._results
@@ -217,8 +226,3 @@ class Cursor:
         self.description = None
         self._rowcount = -1
         self._closed = True
-
-
-apilevel = "2.0"
-threadsafety = 1
-paramstyle = "pyformat"

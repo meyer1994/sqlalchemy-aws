@@ -18,33 +18,24 @@ dynamodb = boto3.resource("dynamodb", endpoint_url="http://localhost:4566")
 table = dynamodb.Table("TEST_TABLE")
 
 
-class DynamoCompiler(sql.compiler.SQLCompiler):
+class DynamoSqlCompiler(sql.compiler.SQLCompiler):
     def visit_insert(self, insert: sa.Insert, **kwargs) -> str:
         """
         The result of this method is going to be passed, as is, to the
         `cursor.execute()` method.
         """
         logger.info("visit_insert() called")
-        logger.debug("kwargs=%r", kwargs)
+        super().visit_insert(insert, **kwargs)
 
-        # copied from superclass
-        state = insert._compile_state_factory(insert, self)
-        insert = state.statement
+        params = []
+        for name in self.params:
+            name = self.escape_literal_column(name)
+            params.append(name)
 
-        # copied from superclass
-        params = sql.compiler.crud._get_crud_params(
-            compiler=self,
-            stmt=insert,
-            compile_state=state,
-            toplevel=True,
-            **kwargs,
-        )
-        logger.debug("params=%r", params)
-
-        # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ? }
+        # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ?, ... }
         query = f'INSERT INTO "{insert.table.name}" VALUE {{ '
-        values = ", ".join(f"'{name}': ?" for _, name, _, _ in params.single_params)
-        query += f"{values} }}"
+        query += ", ".join(f"'{name}': ?" for name in params)
+        query += " }"
 
         return query
 
@@ -55,13 +46,14 @@ class DynamoCompiler(sql.compiler.SQLCompiler):
         kwargs["include_table"] = False
         return super().visit_column(column, **kwargs)
 
-    def visit_values(self, element, asfrom=False, from_linter=None, **kw):
-        logger.info("visit_values() called")
-        return super().visit_values(element, asfrom, from_linter, **kw)
-
     def visit_select(self, select: sa.Select, **kwargs) -> str:
         logger.info("visit_select() called")
         return super().visit_select(select, **kwargs)
+
+    def visit_bindparam(self, bindparam: sa.BindParameter, **kwargs) -> str:
+        logger.info("visit_bindparam() called")
+        super().visit_bindparam(bindparam, **kwargs)
+        return "?"
 
 
 class DynamoDDLCompiler(sql.compiler.DDLCompiler):
@@ -121,40 +113,32 @@ class DynamoDDLCompiler(sql.compiler.DDLCompiler):
         return super().get_column_specification(column, **kwargs)
 
 
-class DynamoIdent(sql.compiler.IdentifierPreparer):
-    pass
-
-
 class DynamoDialect(default.DefaultDialect):
     name = "dynamodb"
     driver = "dynamodriver"
     dbapi_class = dbapi
 
-    preparer = DynamoIdent
-
     ddl_compiler = DynamoDDLCompiler
-    statement_compiler = DynamoCompiler
+    statement_compiler = DynamoSqlCompiler
 
     supports_statement_cache = False
     supports_schemas = False
-    # supports_alter = True
 
     @classmethod
     def import_dbapi(cls):
+        logger.info("import_dbapi() called")
         return cls.dbapi_class
 
     def create_connect_args(self, url):
+        logger.info("create_connect_args() called")
         return [], {}
 
     def has_table(self, connection, table_name, schema=None):
+        logger.info("has_table() called")
         return table_name in self.get_table_names(connection)
 
     def get_columns(self, connection, table_name, schema=None, **kw):
         logger.info("get_columns() called")
-        logger.debug("connection=%s", connection)
-        logger.debug("table_name=%s", table_name)
-        logger.debug("schema=%s", schema)
-        logger.debug("kw=%s", kw)
 
         attribute_definitions = table.attribute_definitions
         key_attributes = {k["AttributeName"] for k in table.key_schema}
@@ -184,38 +168,23 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_table_names(self, connection, schema=None, **kw):
         logger.info("get_table_names() called")
-        logger.debug("connection=%s", connection)
-        logger.debug("schema=%s", schema)
-        logger.debug("kw=%s", kw)
-
         response = dynamodb.tables.all()
-        logger.debug("response=%s", response)
-        names = [i.name for i in response]
-        logger.debug("names=%s", names)
-        return names
+        return [i.name for i in response]
 
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
         logger.info("get_pk_constraint() called")
-        logger.debug("connection=%s", connection)
-        logger.debug("table_name=%s", table_name)
-        logger.debug("schema=%s", schema)
-        logger.debug("kw=%s", kw)
 
-        constrained_columns = [k["AttributeName"] for k in table.key_schema]
         return {
-            "constrained_columns": constrained_columns,
+            "constrained_columns": [k["AttributeName"] for k in table.key_schema],
             "name": "pk",  # DynamoDB does not name PK constraints
         }
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+        logger.info("get_foreign_keys() called")
         return []
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
         logger.info("get_indexes() called")
-        logger.debug("connection=%s", connection)
-        logger.debug("table_name=%s", table_name)
-        logger.debug("schema=%s", schema)
-        logger.debug("kw=%s", kw)
 
         indexes = []
 
@@ -225,7 +194,7 @@ class DynamoDialect(default.DefaultDialect):
                 {
                     "name": idx["IndexName"],
                     "column_names": [k["AttributeName"] for k in idx["KeySchema"]],
-                    "unique": False,  # DynamoDB indexes are not unique by default
+                    "unique": True,  # DynamoDB indexes are not unique by default
                 }
             )
 
@@ -235,7 +204,7 @@ class DynamoDialect(default.DefaultDialect):
                 {
                     "name": idx["IndexName"],
                     "column_names": [k["AttributeName"] for k in idx["KeySchema"]],
-                    "unique": False,
+                    "unique": True,
                 }
             )
 
