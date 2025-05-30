@@ -1,0 +1,24 @@
+[project]
+name = "sqla"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "boto3>=1.38.25",
+    "py-partiql-parser>=0.6.1",
+    "pydantic>=2.11.5",
+    "sqlalchemy>=2.0.41",
+]
+
+[dependency-groups]
+dev = [
+    "awscli-local>=0.22.0",
+    "mypy>=1.15.0",
+    "ruff>=0.11.11",
+    "types-boto3[dynamodb]>=1.38.25",
+]
+
+[tool.mypy]
+allow_redefinition = true
+check_untyped_defs = true
