@@ -8,6 +8,9 @@ from sqlalchemy.dialects import registry
 from types_boto3_dynamodb import DynamoDBClient
 from types_boto3_dynamodb.service_resource import DynamoDBServiceResource, Table
 
+import sqla.dynamodb
+import sqla.dynamodb.dialect
+
 registry.register("dynamodb", "sqla.dynamodb.dialect", "DynamoDialect")
 
 
@@ -486,6 +489,83 @@ class TestMeta(Mixin, unittest.TestCase):
             [
                 {"AttributeName": "id", "AttributeType": "S"},
                 {"AttributeName": "ts", "AttributeType": "S"},
+            ],
+        )
+
+    def test_create_table_typed_hash_key(self):
+        for sa_type, dy_type in sqla.dynamodb.dialect.TYPES_SA_TO_DYNAMODB.items():
+            with self.subTest(sa_type=sa_type, dy_type=dy_type):
+                self._test_create_table_typed_hash_key(sa_type, dy_type)
+
+    def _test_create_table_typed_hash_key(
+        self,
+        sa_type: type[sa.types.TypeEngine],
+        dy_type: str,
+    ):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(name, meta, sa.Column("id", sa_type, primary_key=True))
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [{"AttributeName": "id", "KeyType": "HASH"}],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [{"AttributeName": "id", "AttributeType": dy_type}],
+        )
+
+    def test_create_table_typed_range_key(self):
+        for sa_type, dy_type in sqla.dynamodb.dialect.TYPES_SA_TO_DYNAMODB.items():
+            with self.subTest(sa_type=sa_type, dy_type=dy_type):
+                self._test_create_table_typed_range_key(sa_type, dy_type)
+
+    def _test_create_table_typed_range_key(
+        self,
+        sa_type: type[sa.types.TypeEngine],
+        dy_type: str,
+    ):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        meta = sa.MetaData()
+        sa.Table(
+            name,
+            meta,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("ts", sa_type, primary_key=True),
+        )
+        meta.create_all(self.engine)
+
+        table = self.resource.Table(name)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [
+                {"AttributeName": "id", "KeyType": "HASH"},
+                {"AttributeName": "ts", "KeyType": "RANGE"},
+            ],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [
+                {"AttributeName": "id", "AttributeType": "S"},
+                {"AttributeName": "ts", "AttributeType": dy_type},
             ],
         )
 

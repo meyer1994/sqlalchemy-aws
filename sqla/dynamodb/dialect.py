@@ -18,6 +18,24 @@ dynamodb = boto3.resource("dynamodb", endpoint_url="http://localhost:4566")
 table = dynamodb.Table("TEST_TABLE")
 
 
+TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], str] = {
+    # numbers
+    sa.Integer: "N",
+    sa.BigInteger: "N",
+    sa.SmallInteger: "N",
+    sa.Numeric: "N",
+    sa.Float: "N",
+    # strings
+    sa.String: "S",
+    sa.Text: "S",
+    sa.Enum: "S",
+    sa.UUID: "S",
+    sa.DateTime: "S",
+    # booleans
+    # sa.Boolean: "BOOL",
+}
+
+
 class DynamoSqlCompiler(sql.compiler.SQLCompiler):
     def visit_insert(self, insert: sa.Insert, **kwargs) -> str:
         """
@@ -27,13 +45,15 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         logger.info("visit_insert() called")
         super().visit_insert(insert, **kwargs)
 
-        params = []
+        params: list[str] = []
         for name in self.params:
             name = self.escape_literal_column(name)
             params.append(name)
 
+        table: str = self.escape_literal_column(insert.table.name)
+
         # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ?, ... }
-        query = f'INSERT INTO "{insert.table.name}" VALUE {{ '
+        query = f'INSERT INTO "{table}" VALUE {{ '
         query += ", ".join(f"'{name}': ?" for name in params)
         query += " }"
 
@@ -66,51 +86,40 @@ class DynamoDDLCompiler(sql.compiler.DDLCompiler):
         assert len(pk_columns) > 0, "DynamoDB requires at least one primary key"
         assert len(pk_columns) < 3, "DynamoDB only supports up to 2 primary keys"
 
-        TYPES = {
-            sa.String: "S",
-        }
-
         if len(pk_columns) == 1:
-            pk = pk_columns[0]
-            pkt = TYPES[type(pk.type)]
-            key_schema = [{"AttributeName": pk.name, "KeyType": "HASH"}]
-            attr_schema = [{"AttributeName": pk.name, "AttributeType": pkt}]
+            hk = pk_columns[0]
+            hkt = TYPES_SA_TO_DYNAMODB[type(hk.type)]
+
+            key_schema = [{"AttributeName": hk.name, "KeyType": "HASH"}]
+            attr_schema = [{"AttributeName": hk.name, "AttributeType": hkt}]
 
         if len(pk_columns) == 2:
             hk, rk = pk_columns
+            hkt = TYPES_SA_TO_DYNAMODB[type(hk.type)]
+            rkt = TYPES_SA_TO_DYNAMODB[type(rk.type)]
+
             key_schema = [
                 {"AttributeName": hk.name, "KeyType": "HASH"},
                 {"AttributeName": rk.name, "KeyType": "RANGE"},
             ]
             attr_schema = [
-                {"AttributeName": hk.name, "AttributeType": TYPES[type(hk.type)]},
-                {"AttributeName": rk.name, "AttributeType": TYPES[type(rk.type)]},
+                {"AttributeName": hk.name, "AttributeType": hkt},
+                {"AttributeName": rk.name, "AttributeType": rkt},
             ]
 
         data: CreateTableInputTypeDef = {
             "TableName": create.target.name,
             "KeySchema": key_schema,
             "AttributeDefinitions": attr_schema,
-            "ProvisionedThroughput": {
-                "ReadCapacityUnits": 1,
-                "WriteCapacityUnits": 1,
-            },
+            "ProvisionedThroughput": {"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
         }
 
         return json.dumps(data)
 
     def visit_drop_table(self, drop: sa.schema.DropTable, **kw):
         logger.info("visit_drop_table() called")
-
-        data: DeleteTableInputTypeDef = {
-            "TableName": drop.target.name,
-        }
-
+        data: DeleteTableInputTypeDef = {"TableName": drop.target.name}
         return json.dumps(data)
-
-    def get_column_specification(self, column, **kwargs):
-        logger.info("get_column_specification() called")
-        return super().get_column_specification(column, **kwargs)
 
 
 class DynamoDialect(default.DefaultDialect):
