@@ -569,6 +569,19 @@ class TestMeta(Mixin, unittest.TestCase):
             ],
         )
 
+    def test_create_create_table_with_attributes(self):
+        name = f"TEST_TABLE-{_now()}"
+        name = name.replace(":", "-")
+        name = name.replace("+", "-")
+
+        columns: list[sa.Column] = []
+        for k, v in sqla.dynamodb.dialect.TYPES_SA_TO_DYNAMODB.items():
+            columns.append(sa.Column(str(k), k))
+
+        meta = sa.MetaData()
+        sa.Table(name, meta, sa.Column("id", sa.String, primary_key=True), *columns)
+        meta.create_all(self.engine)
+
 
 class TestSelect(Mixin, unittest.TestCase):
     """Tests the case of a table with a hash and range key and attributes"""
