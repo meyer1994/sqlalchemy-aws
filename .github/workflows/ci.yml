@@ -27,6 +27,7 @@ jobs:
       - run: uv sync --locked
       - run: uv run -m unittest discover ./tests
         env:
+          AWS_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localstack:4566
       - run: uv run mypy -p sqla
       - run: uv run mypy -p tests
