@@ -2,7 +2,6 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 
-import boto3
 import sqlalchemy as sa
 from pydantic import TypeAdapter, ValidationError
 from types_boto3_dynamodb import DynamoDBClient
@@ -30,7 +29,7 @@ TYPES_DYNAMODB_TO_PY: dict[str, type[Any]] = {
 }
 
 
-def connect(endpoint_url: str | None = None, region_name: str | None = None):
+def connect(client: DynamoDBClient):
     """
     Args:
         endpoint_url: endpoint url to connect to
@@ -39,26 +38,17 @@ def connect(endpoint_url: str | None = None, region_name: str | None = None):
     `DynamoDialect.create_connect_args()`.
     """
     logger.info("connect() called")
-    logger.info(f"endpoint_url: {endpoint_url}")
-    logger.info(f"region_name: {region_name}")
-    return Connection(endpoint_url, region_name)
+    return Connection(client)
 
 
 @dataclass
-class Connection:
+class Connection(sa.Connection):
     """Mock DBAPI Connection."""
 
-    endpoint_url: str | None = None
-    region_name: str | None = None
+    client: DynamoDBClient
 
-    client: DynamoDBClient = field(init=False)
-
-    def __post_init__(self):
-        self.client = boto3.client(
-            "dynamodb",
-            endpoint_url=self.endpoint_url,
-            region_name=self.region_name,
-        )
+    def __init__(self, client: DynamoDBClient):
+        self.client = client
 
     def close(self):
         logger.info("Connection.close() called")
@@ -142,9 +132,9 @@ def _process_response(
         results.append(row)
 
     # and description will have the same order as names
-    description = [Description.from_dynamodb(n, fields[n]) for n in names]
+    description = tuple(Description.from_dynamodb(n, fields[n]) for n in names)
 
-    return tuple(results), tuple(description)
+    return tuple(results), description
 
 
 _CreateAdapter = TypeAdapter(CreateTableInputTypeDef)
@@ -162,7 +152,11 @@ class Cursor:
     _index: int = field(default=0, init=False)
     _closed: bool = field(default=False, init=False)
 
-    def execute(self, sql, parameters=None, **kwargs) -> tuple[sa.Row, ...]:
+    def execute(
+        self,
+        sql: str,
+        parameters: dict[str, Any] | None = None,
+    ) -> tuple[sa.Row, ...]:
         logger.info("Cursor.execute() called")
         # print(sql)
         # print(parameters)
@@ -216,9 +210,8 @@ class Cursor:
     def fetchone(self):
         logger.info("Cursor.fetchone() called")
 
-        if self._results is None:
-            raise Error("No results available. Did you call execute()?")
-
+        if self._results == tuple():
+            return None
         if self._index >= len(self._results):
             return None
 
@@ -228,8 +221,8 @@ class Cursor:
 
     def fetchall(self):
         logger.info("Cursor.fetchall() called")
-        if self._results is None:
-            raise Error("No results available. Did you call execute()?")
+        if self._results == tuple():
+            return []
 
         if self._index >= len(self._results):
             return []

@@ -6,20 +6,19 @@ import boto3
 import sqlalchemy as sa
 import sqlalchemy.sql as sql
 from sqlalchemy.engine import default
+from types_boto3_dynamodb.client import DynamoDBClient
 from types_boto3_dynamodb.literals import ScalarAttributeTypeType
 from types_boto3_dynamodb.type_defs import (
     AttributeDefinitionTypeDef,
     CreateTableInputTypeDef,
     DeleteTableInputTypeDef,
     KeySchemaElementTypeDef,
+    TableDescriptionTypeDef,
 )
 
 from . import dbapi
 
 logger = logging.getLogger(__name__)
-
-dynamodb = boto3.resource("dynamodb", endpoint_url="http://localhost:4566")
-table = dynamodb.Table("TEST_TABLE")
 
 
 TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], ScalarAttributeTypeType] = {
@@ -222,19 +221,24 @@ class DynamoDialect(default.DefaultDialect):
         logger.info("import_dbapi() called")
         return dbapi
 
-    def create_connect_args(self, url: sa.URL) -> tuple[tuple, dict[str, Any]]:
+    def create_connect_args(self, url: sa.URL) -> tuple[tuple[DynamoDBClient], dict]:
         logger.info("create_connect_args() called")
         region = url.query.get("region_name", "us-east-1")
         endpoint = url.query.get("endpoint_url", "http://localhost:4566")
+        client = boto3.client("dynamodb", endpoint_url=endpoint, region_name=region)
+        return (client,), {}
 
-        return tuple(), {
-            "endpoint_url": endpoint,
-            "region_name": region,
-        }
+    def _describe_table(
+        self,
+        connection: dbapi.Connection,
+        name: str,
+    ) -> TableDescriptionTypeDef:
+        response = connection.connection.client.describe_table(TableName=name)
+        return response["Table"]
 
     def has_table(
         self,
-        connection: sa.Connection,
+        connection: dbapi.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -244,15 +248,12 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_columns(
         self,
-        connection: sa.Connection,
+        connection: dbapi.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
     ) -> list[sa.engine.interfaces.ReflectedColumn]:
         logger.info("get_columns() called")
-
-        attribute_definitions = table.attribute_definitions
-        key_attributes = {k["AttributeName"] for k in table.key_schema}
 
         type_map: dict[ScalarAttributeTypeType, type[sa.types.TypeEngine[Any]]] = {
             "S": sa.String,
@@ -260,16 +261,17 @@ class DynamoDialect(default.DefaultDialect):
             "B": sa.LargeBinary,
         }
 
+        table = self._describe_table(connection, table_name)
         columns: list[sa.engine.interfaces.ReflectedColumn] = []
-        for attr in attribute_definitions:
-            attr_name = attr["AttributeName"]
+
+        for attr in table["AttributeDefinitions"]:
             attr_type = type_map.get(attr["AttributeType"], sa.String)
 
             columns.append(
                 {
-                    "name": attr_name,
+                    "name": attr["AttributeName"],
                     "type": attr_type(),
-                    "nullable": attr_name not in key_attributes,
+                    "nullable": False,
                     "default": None,
                     "autoincrement": False,
                 }
@@ -279,61 +281,76 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_table_names(
         self,
-        connection: sa.Connection,
+        connection: dbapi.Connection,
         schema: str | None = None,
         **kw,
     ) -> list[str]:
         logger.info("get_table_names() called")
-        response = dynamodb.tables.all()
-        return [i.name for i in response]
+        tables = connection.connection.client.list_tables()
+        return tables["TableNames"]
 
     def get_pk_constraint(
         self,
-        connection: sa.Connection,
+        connection: dbapi.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
     ) -> sa.engine.interfaces.ReflectedPrimaryKeyConstraint:
         logger.info("get_pk_constraint() called")
 
-        if len(table.key_schema) == 1:
+        table = self._describe_table(connection, table_name)
+
+        if len(table["KeySchema"]) == 1:
             return {
-                "constrained_columns": [table.key_schema[0]["AttributeName"]],
+                "constrained_columns": [table["KeySchema"][0]["AttributeName"]],
                 "name": "HASH",  # DynamoDB does not name PK constraints
             }
 
-        if len(table.key_schema) == 2:
+        if len(table["KeySchema"]) == 2:
             return {
                 "constrained_columns": [
-                    table.key_schema[0]["AttributeName"],
-                    table.key_schema[1]["AttributeName"],
+                    table["KeySchema"][0]["AttributeName"],
+                    table["KeySchema"][1]["AttributeName"],
                 ],
                 "name": "HASH_RANGE",  # DynamoDB does not name PK constraints
             }
 
         raise ValueError("DynamoDB only supports up to 2 primary keys")
 
-    def get_foreign_keys(self, connection, table_name, schema=None, **kw):
+    def get_foreign_keys(
+        self,
+        connection: dbapi.Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw,
+    ) -> list[sa.engine.interfaces.ReflectedForeignKeyConstraint]:
         logger.info("get_foreign_keys() called")
         return []
 
-    def get_indexes(self, connection, table_name, schema=None, **kw):
+    def get_indexes(
+        self,
+        connection: dbapi.Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw,
+    ) -> list[sa.engine.interfaces.ReflectedIndex]:
         logger.info("get_indexes() called")
 
+        table = self._describe_table(connection, table_name)
         indexes = []
 
         # Global Secondary Indexes
-        for idx in table.global_secondary_indexes or []:
+        for idx in table["GlobalSecondaryIndexes"] or []:
             indexes.append(
                 {
                     "name": idx["IndexName"],
                     "column_names": [k["AttributeName"] for k in idx["KeySchema"]],
-                    "unique": True,  # DynamoDB indexes are not unique by default
+                    "unique": True,
                 }
             )
 
         # Local Secondary Indexes
-        for idx in table.local_secondary_indexes or []:
+        for idx in table["LocalSecondaryIndexes"] or []:
             indexes.append(
                 {
                     "name": idx["IndexName"],
