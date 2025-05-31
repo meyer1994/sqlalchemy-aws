@@ -1,4 +1,5 @@
 import datetime as dt
+import os
 import unittest
 
 import boto3
@@ -48,9 +49,9 @@ class Mixin(unittest.TestCase):
 
     def setUp(self):
         super().setUp()
-        ENDPOINT_URL = "http://localhost:4566"
-        self.client = boto3.client("dynamodb", endpoint_url=ENDPOINT_URL)
-        self.resource = boto3.resource("dynamodb", endpoint_url=ENDPOINT_URL)
+        endpoint = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
+        self.client = boto3.client("dynamodb", endpoint_url=endpoint)
+        self.resource = boto3.resource("dynamodb", endpoint_url=endpoint)
 
 
 class TestDynamoSimple(Mixin, unittest.TestCase):
