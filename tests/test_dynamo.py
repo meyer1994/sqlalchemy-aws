@@ -51,11 +51,16 @@ class Mixin(unittest.TestCase):
         super().setUp()
         region = os.environ.get("AWS_REGION", "us-east-1")
         endpoint = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566")
+
         self.client = boto3.client(
-            "dynamodb", region_name=region, endpoint_url=endpoint
+            "dynamodb",
+            region_name=region,
+            endpoint_url=endpoint,
         )
         self.resource = boto3.resource(
-            "dynamodb", region_name=region, endpoint_url=endpoint
+            "dynamodb",
+            region_name=region,
+            endpoint_url=endpoint,
         )
 
 
