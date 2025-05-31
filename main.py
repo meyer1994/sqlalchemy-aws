@@ -1,4 +1,5 @@
 import random
+from pprint import pp
 
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
@@ -6,7 +7,9 @@ from sqlalchemy.dialects import registry
 
 from sqla import log
 
-log.init()
+if False:
+    # if True:
+    log.init()
 
 
 class Base(orm.DeclarativeBase):
@@ -16,65 +19,36 @@ class Base(orm.DeclarativeBase):
 class Test(Base):
     __tablename__ = f"TEST_TABLE_{random.randint(0, 1000000)}"
 
-    id = sa.Column(sa.String, primary_key=True)
-    name = sa.Column(sa.String)
+    id: orm.Mapped[int] = orm.mapped_column(primary_key=True)
+    name: orm.Mapped[str] = orm.mapped_column()
 
 
 registry.register("dynamodb", "sqla.dynamodb.dialect", "DynamoDialect")
-engine = sa.create_engine("dynamodb://")
-metadata = sa.MetaData()
-table = sa.Table(
-    "TEST_TABLE",
-    metadata,
-    sa.Column("id", sa.String, primary_key=True),
-    sa.Column("name", sa.String),
-)
+engine = sa.create_engine("dynamodb://127.0.0.1:4566")
+Base.metadata.create_all(engine)
 
-q = sa.insert(table).values(id="1")
-
-# q = sa.select(table)
 with engine.connect() as conn:
-    result = conn.execute(q)
-    for row in result.fetchall():
-        print(row._asdict())
+    q1 = sa.insert(Test).values(id=1, name="test")
+    result = conn.execute(q1)
 
+with engine.connect() as conn:
+    q2 = sa.select(Test).where(Test.id == 1)
+    result = conn.execute(q2)
+    row = result.fetchone()
+    pp(row._asdict())  # type: ignore
 
-# table = sa.Table("TEST_TABLE", Base.metadata, autoload_with=engine)
-# for column in table.columns:
-#     print(column.name, column.type)
-#     print(column.name, column.type)
-#     print(column.name, column.type)
-#     print(column.name, column.type)
+    q2 = sa.select(Test).where(Test.id == 2)
+    result = conn.execute(q2)
+    row = result.fetchone()
+    print(row)
 
-# select = sa.select(table)
-# with engine.connect() as conn:
-#     result = conn.execute(select)
-#     for row in result.fetchall():
-#         print(row._asdict())
+with engine.connect() as conn:
+    for i in range(5, 15):
+        q = sa.insert(Test).values(id=i, name=f"test {i}")
+        conn.execute(q)
 
-# select = sa.select(table)
-# select = select.where(table.c.id == "test")
-# with engine.connect() as conn:
-#     result = conn.execute(select)
-#     res = result.fetchone()
-#     print(res._asdict())
-
-# insert = sa.insert(table).values(id="%s" % uuid.uuid4())
-# with engine.connect() as conn:
-#     result = conn.execute(insert)
-#     for row in result:
-#         print(row._asdict())
-
-# insert = sa.insert(table).values(id="%s" % uuid.uuid4(), name="test")
-# with engine.connect() as conn:
-#     result = conn.execute(insert)
-#     for row in result:
-#         print(row._asdict())
-# raise SystemExit
-
-
-# update = sa.update(table).where(table.c.id == "test").values(id="%s" % uuid.uuid4())
-# with engine.connect() as conn:
-#     result = conn.execute(update)
-#     for row in result:
-#         print(row)
+    for i in range(5, 15):
+        q2 = sa.select(Test).where(Test.id == i)
+        result = conn.execute(q2)
+        row = result.fetchone()
+        pp(row._asdict())  # type: ignore

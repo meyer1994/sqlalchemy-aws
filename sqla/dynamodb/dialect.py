@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 import boto3
 import sqlalchemy as sa
@@ -53,7 +54,7 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         table: str = self.escape_literal_column(insert.table.name)
 
         # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ?, ... }
-        query = f'INSERT INTO "{table}" VALUE {{ '
+        query = f'INSERT INTO "{table}" VALUE {{'
         query += ", ".join(f"'{name}': ?" for name in params)
         query += " }"
 
@@ -122,10 +123,15 @@ class DynamoDDLCompiler(sql.compiler.DDLCompiler):
         return json.dumps(data)
 
 
+class DynamoTypeCompiler(sql.compiler.GenericTypeCompiler):
+    """Leaving this here for reference"""
+
+    pass
+
+
 class DynamoDialect(default.DefaultDialect):
     name = "dynamodb"
     driver = "dynamodriver"
-    dbapi_class = dbapi
 
     ddl_compiler = DynamoDDLCompiler
     statement_compiler = DynamoSqlCompiler
@@ -134,13 +140,15 @@ class DynamoDialect(default.DefaultDialect):
     supports_schemas = False
 
     @classmethod
-    def import_dbapi(cls):
+    def import_dbapi(cls) -> dbapi:
         logger.info("import_dbapi() called")
-        return cls.dbapi_class
+        return dbapi
 
-    def create_connect_args(self, url):
+    def create_connect_args(self, url: sa.URL) -> tuple[tuple, dict[str, Any]]:
         logger.info("create_connect_args() called")
-        return [], {}
+        host = url.host or "127.0.0.1"  # aws local dynamodb
+        port = url.port or 4566  # aws local dynamodb
+        return [], {"endpoint_url": f"http://{host}:{port}"}
 
     def has_table(self, connection, table_name, schema=None):
         logger.info("has_table() called")

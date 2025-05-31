@@ -3,6 +3,7 @@ import unittest
 
 import boto3
 import sqlalchemy as sa
+import sqlalchemy.orm as orm
 from botocore.exceptions import ClientError
 from sqlalchemy.dialects import registry
 from types_boto3_dynamodb import DynamoDBClient
@@ -15,7 +16,30 @@ registry.register("dynamodb", "sqla.dynamodb.dialect", "DynamoDialect")
 
 
 def _now():
+    """
+    Returns the current UTC time in ISO format.
+
+    >>> _now()
+    '2025-05-30T12:00:00.000000'
+    """
     return dt.datetime.now(dt.UTC).isoformat()
+
+
+def _name():
+    """
+    Generates a unique name for a test table
+
+    It uses the current UTC time and replaces colons and plus signs with dashes.
+
+    >>> _now()
+    '2025-05-30T12:00:00.000000+00:00'
+    >>> _name()
+    'TEST_TABLE-2025-05-30T12-00-00-000000-00-00'
+    """
+    now = _now()
+    now = now.replace(":", "-")
+    now = now.replace("+", "-")
+    return f"TEST_TABLE-{now}"
 
 
 class Mixin(unittest.TestCase):
@@ -581,6 +605,42 @@ class TestMeta(Mixin, unittest.TestCase):
         meta = sa.MetaData()
         sa.Table(name, meta, sa.Column("id", sa.String, primary_key=True), *columns)
         meta.create_all(self.engine)
+
+
+class TestOrm(Mixin, unittest.TestCase):
+    """Tests the case of a table with a hash and range key and attributes"""
+
+    engine: sa.Engine
+
+    def setUp(self):
+        super().setUp()
+        self.engine = sa.create_engine("dynamodb://")
+
+    def test_orm(self):
+        class Base(orm.DeclarativeBase):
+            pass
+
+        class Test(Base):
+            __tablename__ = _name()
+            id = orm.mapped_column(sa.Integer, primary_key=True)
+            name = orm.mapped_column(sa.String)
+
+        Base.metadata.create_all(self.engine)
+
+        table = self.resource.Table(Test.__tablename__)
+        table.wait_until_exists()
+        self.addCleanup(table.wait_until_not_exists)
+        self.addCleanup(table.delete)
+
+        self.assertListEqual(
+            table.key_schema,
+            [{"AttributeName": "id", "KeyType": "HASH"}],
+        )
+
+        self.assertListEqual(
+            table.attribute_definitions,
+            [{"AttributeName": "id", "AttributeType": "N"}],
+        )
 
 
 class TestSelect(Mixin, unittest.TestCase):
