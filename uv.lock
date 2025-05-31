@@ -3,12 +3,6 @@ revision = 2
 requires-python = ">=3.13"
 
 [[package]]
-name = "amazon-ion"
-version = "0.13.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/35/61/689d4400a2f51cd2b118014b11063c6baafda3484ea5440c7cab1ec1944e/amazon.ion-0.13.0.tar.gz", hash = "sha256:18a41d3f1192e287ada981dd833af7b2d9cdc8406f3fbb1b54558b0ce36e85be", size = 796475, upload-time = "2025-01-10T23:22:19.169Z" }
-
-[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -148,15 +142,6 @@ wheels = [
 ]
 
 [[package]]
-name = "py-partiql-parser"
-version = "0.6.1"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/58/a1/0a2867e48b232b4f82c4929ef7135f2a5d72c3886b957dccf63c70aa2fcb/py_partiql_parser-0.6.1.tar.gz", hash = "sha256:8583ff2a0e15560ef3bc3df109a7714d17f87d81d33e8c38b7fed4e58a63215d", size = 17120, upload-time = "2024-12-25T22:06:41.327Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/97/84/0e410c20bbe9a504fc56e97908f13261c2b313d16cbb3b738556166f044a/py_partiql_parser-0.6.1-py2.py3-none-any.whl", hash = "sha256:ff6a48067bff23c37e9044021bf1d949c83e195490c17e020715e927fe5b2456", size = 23520, upload-time = "2024-12-25T22:06:39.106Z" },
-]
-
-[[package]]
 name = "pydantic"
 version = "2.11.5"
 source = { registry = "https://pypi.org/simple" }
@@ -279,12 +264,11 @@ name = "sqla"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
-    { name = "amazon-ion" },
     { name = "boto3" },
-    { name = "py-partiql-parser" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "sqlalchemy" },
+    { name = "types-boto3", extra = ["dynamodb"] },
 ]
 
 [package.dev-dependencies]
@@ -292,17 +276,15 @@ dev = [
     { name = "awscli-local" },
     { name = "mypy" },
     { name = "ruff" },
-    { name = "types-boto3", extra = ["dynamodb"] },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "amazon-ion", specifier = ">=0.13.0" },
     { name = "boto3", specifier = ">=1.38.25" },
-    { name = "py-partiql-parser", specifier = ">=0.6.1" },
     { name = "pydantic", specifier = ">=2.11.5" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "sqlalchemy", specifier = ">=2.0.41" },
+    { name = "types-boto3", extras = ["dynamodb"], specifier = ">=1.38.25" },
 ]
 
 [package.metadata.requires-dev]
@@ -310,7 +292,6 @@ dev = [
     { name = "awscli-local", specifier = ">=0.22.0" },
     { name = "mypy", specifier = ">=1.15.0" },
     { name = "ruff", specifier = ">=0.11.11" },
-    { name = "types-boto3", extras = ["dynamodb"], specifier = ">=1.38.25" },
 ]
 
 [[package]]
