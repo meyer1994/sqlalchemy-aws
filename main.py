@@ -7,8 +7,7 @@ from sqlalchemy.dialects import registry
 
 from sqla import log
 
-if False:
-    # if True:
+if True:
     log.init()
 
 
@@ -24,7 +23,8 @@ class Test(Base):
 
 
 registry.register("dynamodb", "sqla.dynamodb.dialect", "DynamoDialect")
-engine = sa.create_engine("dynamodb://127.0.0.1:4566")
+url = "dynamodb://?endpoint_url=http://localhost:4566&region_name=us-east-1"
+engine = sa.create_engine(url)
 Base.metadata.create_all(engine)
 
 with engine.connect() as conn:

@@ -224,9 +224,13 @@ class DynamoDialect(default.DefaultDialect):
 
     def create_connect_args(self, url: sa.URL) -> tuple[tuple, dict[str, Any]]:
         logger.info("create_connect_args() called")
-        host = url.host or "127.0.0.1"  # aws local dynamodb
-        port = url.port or 4566  # aws local dynamodb
-        return tuple(), {"endpoint_url": f"http://{host}:{port}"}
+        region = url.query.get("region_name", "us-east-1")
+        endpoint = url.query.get("endpoint_url", "http://localhost:4566")
+
+        return tuple(), {
+            "endpoint_url": endpoint,
+            "region_name": region,
+        }
 
     def has_table(
         self,

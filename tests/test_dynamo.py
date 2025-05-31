@@ -46,6 +46,7 @@ def _name():
 class Mixin(unittest.TestCase):
     client: DynamoDBClient
     resource: DynamoDBServiceResource
+    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -62,6 +63,9 @@ class Mixin(unittest.TestCase):
             region_name=region,
             endpoint_url=endpoint,
         )
+        self.engine = sa.create_engine(
+            f"dynamodb://?endpoint_url={endpoint}&region_name={region}"
+        )
 
 
 class TestDynamoSimple(Mixin, unittest.TestCase):
@@ -69,7 +73,6 @@ class TestDynamoSimple(Mixin, unittest.TestCase):
 
     stable: sa.Table
     dtable: Table
-    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -94,7 +97,6 @@ class TestDynamoSimple(Mixin, unittest.TestCase):
         )
 
         self.client.get_waiter("table_exists").wait(TableName=name)
-        self.engine = sa.create_engine("dynamodb://")
 
     def tearDown(self):
         self.dtable.delete()
@@ -126,7 +128,6 @@ class TestDynamoHashWithAttributes(Mixin, unittest.TestCase):
 
     stable: sa.Table
     dtable: Table
-    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -151,8 +152,6 @@ class TestDynamoHashWithAttributes(Mixin, unittest.TestCase):
             sa.Column("id", sa.String, primary_key=True),
             sa.Column("name", sa.String),
         )
-
-        self.engine = sa.create_engine("dynamodb://")
 
     def tearDown(self):
         self.dtable.delete()
@@ -192,7 +191,6 @@ class TestDynamoHashRange(Mixin, unittest.TestCase):
 
     stable: sa.Table
     dtable: Table
-    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -226,8 +224,6 @@ class TestDynamoHashRange(Mixin, unittest.TestCase):
             sa.Column("id", sa.String, primary_key=True),
             sa.Column("ts", sa.String, primary_key=True),
         )
-
-        self.engine = sa.create_engine("dynamodb://")
 
     def tearDown(self):
         self.dtable.delete()
@@ -269,7 +265,6 @@ class TestDynamoHashRangeWithAttributes(Mixin, unittest.TestCase):
 
     stable: sa.Table
     dtable: Table
-    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -304,8 +299,6 @@ class TestDynamoHashRangeWithAttributes(Mixin, unittest.TestCase):
             sa.Column("ts", sa.String, primary_key=True),
             sa.Column("name", sa.String),
         )
-
-        self.engine = sa.create_engine("dynamodb://")
 
     def tearDown(self):
         self.dtable.delete()
@@ -344,12 +337,6 @@ class TestDynamoHashRangeWithAttributes(Mixin, unittest.TestCase):
 
 class TestMeta(Mixin, unittest.TestCase):
     """Tests the case of a table with a hash and range key and attributes"""
-
-    engine: sa.Engine
-
-    def setUp(self):
-        super().setUp()
-        self.engine = sa.create_engine("dynamodb://")
 
     def test_create(self):
         name = f"TEST_TABLE-{_now()}"
@@ -621,12 +608,6 @@ class TestMeta(Mixin, unittest.TestCase):
 class TestOrm(Mixin, unittest.TestCase):
     """Tests the case of a table with a hash and range key and attributes"""
 
-    engine: sa.Engine
-
-    def setUp(self):
-        super().setUp()
-        self.engine = sa.create_engine("dynamodb://")
-
     def test_orm(self):
         class Base(orm.DeclarativeBase):
             pass
@@ -659,7 +640,6 @@ class TestSelect(Mixin, unittest.TestCase):
 
     stable: sa.Table
     dtable: Table
-    engine: sa.Engine
 
     def setUp(self):
         super().setUp()
@@ -683,8 +663,6 @@ class TestSelect(Mixin, unittest.TestCase):
             sa.MetaData(),
             sa.Column("id", sa.String, primary_key=True),
         )
-
-        self.engine = sa.create_engine("dynamodb://")
 
     def tearDown(self):
         self.dtable.delete()

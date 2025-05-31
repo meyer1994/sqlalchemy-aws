@@ -30,7 +30,7 @@ TYPES_DYNAMODB_TO_PY: dict[str, type[Any]] = {
 }
 
 
-def connect(endpoint_url: str | None = None):
+def connect(endpoint_url: str | None = None, region_name: str | None = None):
     """
     Args:
         endpoint_url: endpoint url to connect to
@@ -39,7 +39,9 @@ def connect(endpoint_url: str | None = None):
     `DynamoDialect.create_connect_args()`.
     """
     logger.info("connect() called")
-    return Connection(endpoint_url)
+    logger.info(f"endpoint_url: {endpoint_url}")
+    logger.info(f"region_name: {region_name}")
+    return Connection(endpoint_url, region_name)
 
 
 @dataclass
@@ -47,10 +49,16 @@ class Connection:
     """Mock DBAPI Connection."""
 
     endpoint_url: str | None = None
+    region_name: str | None = None
+
     client: DynamoDBClient = field(init=False)
 
     def __post_init__(self):
-        self.client = boto3.client("dynamodb", endpoint_url=self.endpoint_url)
+        self.client = boto3.client(
+            "dynamodb",
+            endpoint_url=self.endpoint_url,
+            region_name=self.region_name,
+        )
 
     def close(self):
         logger.info("Connection.close() called")
