@@ -1,0 +1,21 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - run: uv sync --locked --all-extras
+      - run: uv run -m unittest discover ./tests
+      - run: uv run mypy -p sqla
+      - run: uv run mypy -p tests
+      - run: uv run ruff check ./sqla
+      - run: uv run ruff check ./tests

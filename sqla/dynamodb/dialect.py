@@ -6,9 +6,12 @@ import boto3
 import sqlalchemy as sa
 import sqlalchemy.sql as sql
 from sqlalchemy.engine import default
+from types_boto3_dynamodb.literals import ScalarAttributeTypeType
 from types_boto3_dynamodb.type_defs import (
+    AttributeDefinitionTypeDef,
     CreateTableInputTypeDef,
     DeleteTableInputTypeDef,
+    KeySchemaElementTypeDef,
 )
 
 from . import dbapi
@@ -19,7 +22,7 @@ dynamodb = boto3.resource("dynamodb", endpoint_url="http://localhost:4566")
 table = dynamodb.Table("TEST_TABLE")
 
 
-TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], str] = {
+TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], ScalarAttributeTypeType] = {
     # numbers
     sa.Integer: "N",
     sa.BigInteger: "N",
@@ -38,20 +41,26 @@ TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], str] = {
 
 
 class DynamoSqlCompiler(sql.compiler.SQLCompiler):
-    def visit_insert(self, insert: sa.Insert, **kwargs) -> str:
+    def visit_insert(
+        self,
+        insert_stmt: sa.Insert,
+        visited_bindparam: Any | None = None,
+        visiting_cte: Any | None = None,
+        **kwargs,
+    ) -> str:
         """
         The result of this method is going to be passed, as is, to the
         `cursor.execute()` method.
         """
         logger.info("visit_insert() called")
-        super().visit_insert(insert, **kwargs)
+        super().visit_insert(insert_stmt, visited_bindparam, visiting_cte, **kwargs)
 
         params: list[str] = []
         for name in self.params:
             name = self.escape_literal_column(name)
             params.append(name)
 
-        table: str = self.escape_literal_column(insert.table.name)
+        table: str = self.escape_literal_column(insert_stmt.table.name)
 
         # INSERT INTO "TEST_TABLE" VALUE { 'id': ?, 'name': ?, ... }
         query = f'INSERT INTO "{table}" VALUE {{'
@@ -60,21 +69,91 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
 
         return query
 
-    def visit_column(self, column: sa.Column, **kwargs) -> str:
+    def visit_column(
+        self,
+        column: sa.ColumnClause[Any],
+        add_to_result_map: Any | None = None,
+        include_table: bool = True,
+        result_map_targets: tuple[Any, ...] = (),
+        ambiguous_table_name_map: Any | None = None,
+        **kwargs,
+    ) -> str:
         logger.info("visit_column() called")
         # this removes the table name from the column name
         # EG: "TEST_TABLE.id" -> "id"
-        kwargs["include_table"] = False
-        return super().visit_column(column, **kwargs)
+        return super().visit_column(
+            column,
+            add_to_result_map,
+            False,
+            result_map_targets,
+            ambiguous_table_name_map,
+            **kwargs,
+        )
 
-    def visit_select(self, select: sa.Select, **kwargs) -> str:
+    def visit_select(
+        self,
+        select_stmt: sa.Select,
+        asfrom: bool = False,
+        insert_into: bool = False,
+        fromhints: Any | None = None,
+        compound_index: Any | None = None,
+        select_wraps_for: Any | None = None,
+        lateral: bool = False,
+        from_linter: Any | None = None,
+        **kwargs,
+    ) -> str:
         logger.info("visit_select() called")
-        return super().visit_select(select, **kwargs)
+        return super().visit_select(
+            select_stmt,
+            asfrom,
+            insert_into,
+            fromhints,
+            compound_index,
+            select_wraps_for,
+            lateral,
+            from_linter,
+            **kwargs,
+        )
 
-    def visit_bindparam(self, bindparam: sa.BindParameter, **kwargs) -> str:
+    def visit_bindparam(
+        self,
+        bindparam: sa.BindParameter,
+        within_columns_clause: bool = False,
+        literal_binds: bool = False,
+        skip_bind_expression: bool = False,
+        literal_execute: bool = False,
+        render_postcompile: bool = False,
+        **kwargs,
+    ) -> str:
         logger.info("visit_bindparam() called")
-        super().visit_bindparam(bindparam, **kwargs)
+        super().visit_bindparam(
+            bindparam,
+            within_columns_clause,
+            literal_binds,
+            skip_bind_expression,
+            literal_execute,
+            render_postcompile,
+            **kwargs,
+        )
         return "?"
+
+    def visit_update(
+        self,
+        update_stmt: sa.Update,
+        visiting_cte: Any | None = None,
+        **kwargs,
+    ) -> str:
+        logger.info("visit_update() called")
+        return super().visit_update(update_stmt, visiting_cte, **kwargs)
+
+    def visit_delete(
+        self,
+        delete_stmt: sa.Delete,
+        visiting_cte: Any | None = None,
+        **kwargs,
+    ) -> str:
+        logger.info("visit_delete() called")
+        return super().visit_delete(delete_stmt, visiting_cte, **kwargs)
 
 
 class DynamoDDLCompiler(sql.compiler.DDLCompiler):
@@ -82,31 +161,29 @@ class DynamoDDLCompiler(sql.compiler.DDLCompiler):
         logger.info("visit_create_table() called")
 
         # Extract columns and PKs
+        assert isinstance(create.target, sa.Table), "DynamoDB requires a table"
         columns: list[sa.Column] = list(create.target.columns)
         pk_columns = [col for col in columns if col.primary_key]
         assert len(pk_columns) > 0, "DynamoDB requires at least one primary key"
         assert len(pk_columns) < 3, "DynamoDB only supports up to 2 primary keys"
 
+        key_schema: list[KeySchemaElementTypeDef] = []
+        attr_schema: list[AttributeDefinitionTypeDef] = []
+
         if len(pk_columns) == 1:
             hk = pk_columns[0]
             hkt = TYPES_SA_TO_DYNAMODB[type(hk.type)]
-
-            key_schema = [{"AttributeName": hk.name, "KeyType": "HASH"}]
-            attr_schema = [{"AttributeName": hk.name, "AttributeType": hkt}]
+            key_schema.append({"AttributeName": hk.name, "KeyType": "HASH"})
+            attr_schema.append({"AttributeName": hk.name, "AttributeType": hkt})
 
         if len(pk_columns) == 2:
             hk, rk = pk_columns
             hkt = TYPES_SA_TO_DYNAMODB[type(hk.type)]
             rkt = TYPES_SA_TO_DYNAMODB[type(rk.type)]
-
-            key_schema = [
-                {"AttributeName": hk.name, "KeyType": "HASH"},
-                {"AttributeName": rk.name, "KeyType": "RANGE"},
-            ]
-            attr_schema = [
-                {"AttributeName": hk.name, "AttributeType": hkt},
-                {"AttributeName": rk.name, "AttributeType": rkt},
-            ]
+            key_schema.append({"AttributeName": hk.name, "KeyType": "HASH"})
+            key_schema.append({"AttributeName": rk.name, "KeyType": "RANGE"})
+            attr_schema.append({"AttributeName": hk.name, "AttributeType": hkt})
+            attr_schema.append({"AttributeName": rk.name, "AttributeType": rkt})
 
         data: CreateTableInputTypeDef = {
             "TableName": create.target.name,
@@ -119,6 +196,7 @@ class DynamoDDLCompiler(sql.compiler.DDLCompiler):
 
     def visit_drop_table(self, drop: sa.schema.DropTable, **kw):
         logger.info("visit_drop_table() called")
+        assert isinstance(drop.target, sa.Table), "DynamoDB requires a table"
         data: DeleteTableInputTypeDef = {"TableName": drop.target.name}
         return json.dumps(data)
 
@@ -140,7 +218,7 @@ class DynamoDialect(default.DefaultDialect):
     supports_schemas = False
 
     @classmethod
-    def import_dbapi(cls) -> dbapi:
+    def import_dbapi(cls) -> Any:
         logger.info("import_dbapi() called")
         return dbapi
 
@@ -148,25 +226,37 @@ class DynamoDialect(default.DefaultDialect):
         logger.info("create_connect_args() called")
         host = url.host or "127.0.0.1"  # aws local dynamodb
         port = url.port or 4566  # aws local dynamodb
-        return [], {"endpoint_url": f"http://{host}:{port}"}
+        return tuple(), {"endpoint_url": f"http://{host}:{port}"}
 
-    def has_table(self, connection, table_name, schema=None):
+    def has_table(
+        self,
+        connection: sa.Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw,
+    ) -> bool:
         logger.info("has_table() called")
-        return table_name in self.get_table_names(connection)
+        return table_name in self.get_table_names(connection, schema, **kw)
 
-    def get_columns(self, connection, table_name, schema=None, **kw):
+    def get_columns(
+        self,
+        connection: sa.Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw,
+    ) -> list[sa.engine.interfaces.ReflectedColumn]:
         logger.info("get_columns() called")
 
         attribute_definitions = table.attribute_definitions
         key_attributes = {k["AttributeName"] for k in table.key_schema}
 
-        type_map = {
+        type_map: dict[ScalarAttributeTypeType, type[sa.types.TypeEngine[Any]]] = {
             "S": sa.String,
             "N": sa.Float,
             "B": sa.LargeBinary,
         }
 
-        columns = []
+        columns: list[sa.engine.interfaces.ReflectedColumn] = []
         for attr in attribute_definitions:
             attr_name = attr["AttributeName"]
             attr_type = type_map.get(attr["AttributeType"], sa.String)
@@ -174,7 +264,7 @@ class DynamoDialect(default.DefaultDialect):
             columns.append(
                 {
                     "name": attr_name,
-                    "type": attr_type,
+                    "type": attr_type(),
                     "nullable": attr_name not in key_attributes,
                     "default": None,
                     "autoincrement": False,
@@ -183,18 +273,41 @@ class DynamoDialect(default.DefaultDialect):
 
         return columns
 
-    def get_table_names(self, connection, schema=None, **kw):
+    def get_table_names(
+        self,
+        connection: sa.Connection,
+        schema: str | None = None,
+        **kw,
+    ) -> list[str]:
         logger.info("get_table_names() called")
         response = dynamodb.tables.all()
         return [i.name for i in response]
 
-    def get_pk_constraint(self, connection, table_name, schema=None, **kw):
+    def get_pk_constraint(
+        self,
+        connection: sa.Connection,
+        table_name: str,
+        schema: str | None = None,
+        **kw,
+    ) -> sa.engine.interfaces.ReflectedPrimaryKeyConstraint:
         logger.info("get_pk_constraint() called")
 
-        return {
-            "constrained_columns": [k["AttributeName"] for k in table.key_schema],
-            "name": "pk",  # DynamoDB does not name PK constraints
-        }
+        if len(table.key_schema) == 1:
+            return {
+                "constrained_columns": [table.key_schema[0]["AttributeName"]],
+                "name": "HASH",  # DynamoDB does not name PK constraints
+            }
+
+        if len(table.key_schema) == 2:
+            return {
+                "constrained_columns": [
+                    table.key_schema[0]["AttributeName"],
+                    table.key_schema[1]["AttributeName"],
+                ],
+                "name": "HASH_RANGE",  # DynamoDB does not name PK constraints
+            }
+
+        raise ValueError("DynamoDB only supports up to 2 primary keys")
 
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         logger.info("get_foreign_keys() called")
