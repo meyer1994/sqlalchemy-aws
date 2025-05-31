@@ -8,6 +8,17 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    services:
+      localstack:
+        image: localstack/localstack
+        ports:
+          - 4566:4566
+          - 4510-4559:4510-4559
+        env:
+          DEBUG: 1
+        volumes:
+          - /var/run/docker.sock:/var/run/docker.sock
+
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
