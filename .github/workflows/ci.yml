@@ -29,6 +29,8 @@ jobs:
         env:
           AWS_REGION: us-east-1
           AWS_ENDPOINT_URL: http://localstack:4566
+          AWS_ACCESS_KEY_ID: test
+          AWS_SECRET_ACCESS_KEY: test
       - run: uv run mypy -p sqla
       - run: uv run mypy -p tests
       - run: uv run ruff check ./sqla

@@ -16,7 +16,7 @@ from types_boto3_dynamodb.type_defs import (
     TableDescriptionTypeDef,
 )
 
-from . import dbapi
+from sqla.dynamodb import dbapi
 
 logger = logging.getLogger(__name__)
 
