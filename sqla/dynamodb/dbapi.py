@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass, field
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TypedDict
 
 import sqlalchemy as sa
 from pydantic import TypeAdapter, ValidationError
@@ -20,7 +20,11 @@ InterfaceError = Exception
 
 apilevel = "2.0"
 threadsafety = 1
-paramstyle = "pyformat"
+# for some reason, setting it to qmark, the default format for partiql, the
+# parameters argument is always passed empty. while setting to numeric makes
+# it pass a tuple of parameters
+# TODO: figure out how to make it work with qmark
+paramstyle = "numeric"
 
 
 TYPES_DYNAMODB_TO_PY: dict[str, type[Any]] = {
@@ -50,10 +54,6 @@ class Connection(sa.Connection):
     def __init__(self, client: DynamoDBClient):
         self.client = client
 
-    def close(self):
-        logger.info("Connection.close() called")
-        self.client.close()
-
     def commit(self):
         logger.info("Connection.commit() called")
 
@@ -66,13 +66,19 @@ class Connection(sa.Connection):
 
 
 class Description(NamedTuple):
+    """
+    A named tuple with same following the dbapi2.0 cursor.description spec
+
+    Created for type hinting and tooling
+    """
+
     name: str
     type_code: type[str | int]
     display_size: int | None
     internal_size: int | None
     precision: int | None
     scale: int | None
-    null_ok: bool
+    null_ok: bool | None
 
     @staticmethod
     def from_dynamodb(name: str, typ: str, null_ok: bool = False):
@@ -125,10 +131,10 @@ def _process_response(
 
     results: list[sa.Row] = []
     for item in items:
-        row = utils.load(item)
+        loaded = utils.load(item)
         # result will be in same order as names
-        row = tuple(row.get(n, None) for n in names)
-        row = factory(row)
+        tupled = tuple(loaded.get(n, None) for n in names)
+        row = factory(tupled)
         results.append(row)
 
     # and description will have the same order as names
@@ -137,6 +143,13 @@ def _process_response(
     return tuple(results), description
 
 
+class _ExecuteParams(TypedDict):
+    """Because pydantic TypeAdapter does not support ExecuteStatementInputTypeDef"""
+
+    Statement: str
+
+
+_ExecuteAdapter = TypeAdapter(_ExecuteParams)
 _CreateAdapter = TypeAdapter(CreateTableInputTypeDef)
 _DropAdapter = TypeAdapter(DeleteTableInputTypeDef)
 
@@ -145,22 +158,43 @@ _DropAdapter = TypeAdapter(DeleteTableInputTypeDef)
 class Cursor:
     connection: Connection
 
-    description: tuple[Description, ...] = field(default_factory=tuple, init=False)
     rowcount: int = field(default=0, init=False)
 
-    _results: tuple[sa.Row, ...] = field(default_factory=tuple, init=False)
+    _description: tuple[Description, ...] | None = field(default=None, init=False)
+    _results: tuple[sa.Row, ...] | None = field(default=None, init=False)
     _index: int = field(default=0, init=False)
     _closed: bool = field(default=False, init=False)
 
     def execute(
         self,
         sql: str,
-        parameters: dict[str, Any] | None = None,
-    ) -> tuple[sa.Row, ...]:
+        parameters: tuple[Any, ...] | None = None,
+    ) -> tuple[sa.Row, ...] | None:
         logger.info("Cursor.execute() called")
-        # print(sql)
-        # print(parameters)
-        # print("=" * 80)
+        logger.info(f"cursor sql: {sql}")
+        logger.info(f"cursor params: {parameters}")
+
+        TYPES = {
+            str: "S",
+            int: "N",
+            bool: "BOOL",
+        }
+
+        params: list[dict[str, Any]] = []
+        for v in parameters or []:
+            key = TYPES[type(v)]
+            params.append({key: str(v)})
+
+        try:
+            logger.info(f"cursor params modified: {params}")
+            kw = _ExecuteAdapter.validate_json(sql)
+            if len(params) > 0:
+                kw["Parameters"] = params  # type: ignore
+            response = self.connection.client.execute_statement(**kw)
+            self._update_cursor(response)  # type: ignore
+            return self._results
+        except ValidationError:
+            logger.info("Not a execute statement")
 
         try:
             in_create = _CreateAdapter.validate_json(sql)
@@ -176,33 +210,15 @@ class Cursor:
         except ValidationError:
             logger.info("Not a drop table statement")
 
-        TYPES = {
-            str: "S",
-            int: "N",
-            bool: "BOOL",
-        }
+        raise ValueError(f"Unknown statement: {sql}")
 
-        params: list[dict[str, Any]] = []
-        for _, v in parameters.items():
-            key = TYPES[type(v)]
-            params.append({key: str(v)})
-
-        if len(params) == 0:
-            response = self.connection.client.execute_statement(
-                Statement=sql,
-            )
-        else:
-            response = self.connection.client.execute_statement(
-                Statement=sql,
-                Parameters=params,
-            )
-
-        self._update_cursor(response)  # type: ignore
-        return self._results
+    @property
+    def description(self) -> tuple[Description, ...] | None:
+        return self._description
 
     def _update_cursor(self, response: dict[str, Any]):
         results, description = _process_response(response)
-        self.description = description
+        self._description = description
         self._results = results
         self._index = 0
         self.rowcount = len(self._results)
@@ -210,7 +226,7 @@ class Cursor:
     def fetchone(self):
         logger.info("Cursor.fetchone() called")
 
-        if self._results == tuple():
+        if self._results is None:
             return None
         if self._index >= len(self._results):
             return None
@@ -221,20 +237,18 @@ class Cursor:
 
     def fetchall(self):
         logger.info("Cursor.fetchall() called")
-        if self._results == tuple():
-            return []
-
+        if self._results is None:
+            return None
         if self._index >= len(self._results):
             return []
-
         rows = self._results[self._index :]
-        self._index = len(self._results)
+        self._index += len(rows)
         return rows
 
     def close(self):
         logger.info("Cursor.close() called")
-        self._results = tuple()
+        self._results = None
         self._index = 0
-        self.description = tuple()
+        self._description = None
         self.rowcount = -1
         self._closed = True

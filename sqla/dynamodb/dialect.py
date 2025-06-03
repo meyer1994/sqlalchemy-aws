@@ -12,6 +12,7 @@ from types_boto3_dynamodb.type_defs import (
     AttributeDefinitionTypeDef,
     CreateTableInputTypeDef,
     DeleteTableInputTypeDef,
+    ExecuteStatementInputTypeDef,
     KeySchemaElementTypeDef,
     TableDescriptionTypeDef,
 )
@@ -66,7 +67,8 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         query += ", ".join(f"'{name}': ?" for name in params)
         query += " }"
 
-        return query
+        data: ExecuteStatementInputTypeDef = {"Statement": query}
+        return json.dumps(data)
 
     def visit_column(
         self,
@@ -102,7 +104,9 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         **kwargs,
     ) -> str:
         logger.info("visit_select() called")
-        return super().visit_select(
+
+        # call it so it populates the state of the compiler
+        select = super().visit_select(
             select_stmt,
             asfrom,
             insert_into,
@@ -114,6 +118,9 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
             **kwargs,
         )
 
+        data: ExecuteStatementInputTypeDef = {"Statement": select}
+        return json.dumps(data)
+
     def visit_bindparam(
         self,
         bindparam: sa.BindParameter,
@@ -124,6 +131,7 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         render_postcompile: bool = False,
         **kwargs,
     ) -> str:
+        """Forces the bindparam to be a question mark"""
         logger.info("visit_bindparam() called")
         super().visit_bindparam(
             bindparam,
@@ -136,15 +144,6 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         )
         return "?"
 
-    def visit_update(
-        self,
-        update_stmt: sa.Update,
-        visiting_cte: Any | None = None,
-        **kwargs,
-    ) -> str:
-        logger.info("visit_update() called")
-        return super().visit_update(update_stmt, visiting_cte, **kwargs)
-
     def visit_delete(
         self,
         delete_stmt: sa.Delete,
@@ -152,7 +151,20 @@ class DynamoSqlCompiler(sql.compiler.SQLCompiler):
         **kwargs,
     ) -> str:
         logger.info("visit_delete() called")
-        return super().visit_delete(delete_stmt, visiting_cte, **kwargs)
+        delete = super().visit_delete(delete_stmt, visiting_cte, **kwargs)
+        data: ExecuteStatementInputTypeDef = {"Statement": delete}
+        return json.dumps(data)
+
+    def visit_update(
+        self,
+        update_stmt: sa.Update,
+        visiting_cte: Any | None = None,
+        **kwargs,
+    ) -> str:
+        logger.info("visit_update() called")
+        select = super().visit_update(update_stmt, visiting_cte, **kwargs)
+        data: ExecuteStatementInputTypeDef = {"Statement": select}
+        return json.dumps(data)
 
 
 class DynamoDDLCompiler(sql.compiler.DDLCompiler):
@@ -215,6 +227,8 @@ class DynamoDialect(default.DefaultDialect):
 
     supports_statement_cache = False
     supports_schemas = False
+    supports_alter = False
+    supports_comments = False
 
     @classmethod
     def import_dbapi(cls) -> Any:
@@ -223,9 +237,11 @@ class DynamoDialect(default.DefaultDialect):
 
     def create_connect_args(self, url: sa.URL) -> tuple[tuple[DynamoDBClient], dict]:
         logger.info("create_connect_args() called")
-        region = url.query.get("region_name", "us-east-1")
-        endpoint = url.query.get("endpoint_url", "http://localhost:4566")
-        client = boto3.client("dynamodb", endpoint_url=endpoint, region_name=region)
+        client: DynamoDBClient = boto3.client(
+            "dynamodb",
+            endpoint_url=url.query.get("endpoint_url", "http://localhost:4566"),
+            region_name=url.query.get("region_name", "us-east-1"),
+        )
         return (client,), {}
 
     def _describe_table(

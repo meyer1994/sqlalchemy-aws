@@ -18,7 +18,7 @@ CONFIG = {
     },
     "loggers": {
         "sqla": {"level": logging.DEBUG, "handlers": ["console"]},
-        # "sqlalchemy": {"level": "DEBUG", "handlers": ["console"]},
+        "sqlalchemy": {"level": "DEBUG", "handlers": ["console"]},
     },
 }
 
