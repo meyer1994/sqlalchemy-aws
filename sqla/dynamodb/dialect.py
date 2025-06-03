@@ -235,14 +235,13 @@ class DynamoDialect(default.DefaultDialect):
         logger.info("import_dbapi() called")
         return dbapi
 
-    def create_connect_args(self, url: sa.URL) -> tuple[tuple[DynamoDBClient], dict]:
-        logger.info("create_connect_args() called")
+    def create_connect_args(self, url: sa.URL) -> tuple[tuple, dict]:
         client: DynamoDBClient = boto3.client(
             "dynamodb",
-            endpoint_url=url.query.get("endpoint_url", "http://localhost:4566"),
-            region_name=url.query.get("region_name", "us-east-1"),
+            endpoint_url=url.query.get("endpoint_url", "http://localhost:4566"),  # type: ignore
+            region_name=url.query.get("region_name", "us-east-1"),  # type: ignore
         )
-        return (client,), {}
+        return (), {"client": client}
 
     def _describe_table(
         self,
