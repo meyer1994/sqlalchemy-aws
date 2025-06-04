@@ -651,7 +651,7 @@ class TestSelect(Mixin, unittest.TestCase):
         self.client.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "N"}],
             ProvisionedThroughput={"ReadCapacityUnits": 1, "WriteCapacityUnits": 1},
         )
 
@@ -661,8 +661,9 @@ class TestSelect(Mixin, unittest.TestCase):
         self.stable = sa.Table(
             name,
             sa.MetaData(),
-            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("id", sa.Integer, primary_key=True),
             sa.Column("name", sa.String),
+            sa.Column("age", sa.Integer),
         )
 
     def tearDown(self):
@@ -670,9 +671,9 @@ class TestSelect(Mixin, unittest.TestCase):
         self.dtable.wait_until_not_exists()
 
     def test_select_all(self):
-        self.dtable.put_item(Item={"id": "1"})
-        self.dtable.put_item(Item={"id": "2"})
-        self.dtable.put_item(Item={"id": "3"})
+        self.dtable.put_item(Item={"id": 1})
+        self.dtable.put_item(Item={"id": 2})
+        self.dtable.put_item(Item={"id": 3})
 
         with self.engine.connect() as conn:
             q = sa.select(self.stable)
@@ -680,43 +681,43 @@ class TestSelect(Mixin, unittest.TestCase):
             result = sorted(result)
 
         items = [i._asdict() for i in result]
-        self.assertListEqual(items, [{"id": "1"}, {"id": "2"}, {"id": "3"}])
+        self.assertListEqual(items, [{"id": 1}, {"id": 2}, {"id": 3}])
 
     def test_select_one(self):
-        self.dtable.put_item(Item={"id": "1"})
-        self.dtable.put_item(Item={"id": "2"})
-        self.dtable.put_item(Item={"id": "3"})
+        self.dtable.put_item(Item={"id": 1})
+        self.dtable.put_item(Item={"id": 2})
+        self.dtable.put_item(Item={"id": 3})
 
         with self.engine.connect() as conn:
-            q = sa.select(self.stable).where(self.stable.c.id == "1")
+            q = sa.select(self.stable).where(self.stable.c.id == 1)
             result = conn.execute(q)
             result = sorted(result)
 
         items = [i._asdict() for i in result]
-        self.assertListEqual(items, [{"id": "1"}])
+        self.assertListEqual(items, [{"id": 1}])
 
     def test_select_with_multiple_where(self):
-        self.dtable.put_item(Item={"id": "1", "name": "John", "age": 20})
-        self.dtable.put_item(Item={"id": "2", "name": "Jane", "age": 25})
-        self.dtable.put_item(Item={"id": "3", "name": "Jim", "age": 26})
+        self.dtable.put_item(Item={"id": 1, "name": "John", "age": 20})
+        self.dtable.put_item(Item={"id": 2, "name": "Jane", "age": 25})
+        self.dtable.put_item(Item={"id": 3, "name": "Jim", "age": 26})
 
         with self.engine.connect() as conn, self.subTest("by name"):
             q = sa.select(self.stable)
-            q = q.where(self.stable.c.id == "1", self.stable.c.name == "John")
+            q = q.where(self.stable.c.id == 1, self.stable.c.name == "John")
             result = conn.execute(q)
             result = sorted(result)
 
         items = [i._asdict() for i in result]
-        self.assertListEqual(items, [{"id": "1", "name": "John", "age": 20}])
+        self.assertListEqual(items, [{"id": 1, "name": "John", "age": 20}])
 
         with self.engine.connect() as conn, self.subTest("by age"):
             q = sa.select(self.stable)
-            q = q.where(self.stable.c.id == "1", self.stable.c.age == 25)
+            q = q.where(self.stable.c.id == 2, self.stable.c.age == 25)
             result = conn.execute(q)  # type: ignore
             result = sorted(result)
 
         items = [i._asdict() for i in result]
-        self.assertListEqual(items, [{"id": "2", "name": "Jane", "age": 25}])
+        self.assertListEqual(items, [{"id": 2, "name": "Jane", "age": 25}])
 
         with self.engine.connect() as conn, self.subTest("by age gt"):
             q = sa.select(self.stable)
@@ -725,4 +726,4 @@ class TestSelect(Mixin, unittest.TestCase):
             result = sorted(result)
 
         items = [i._asdict() for i in result]
-        self.assertListEqual(items, [{"id": "3", "name": "Jim", "age": 26}])
+        self.assertListEqual(items, [{"id": 3, "name": "Jim", "age": 26}])

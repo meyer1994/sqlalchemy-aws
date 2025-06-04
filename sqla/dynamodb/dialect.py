@@ -41,6 +41,8 @@ TYPES_SA_TO_DYNAMODB: dict[type[sa.types.TypeEngine], ScalarAttributeTypeType] =
 
 
 class DynamoSqlCompiler(sql.compiler.SQLCompiler):
+    _ordered_columns = False
+
     def visit_insert(
         self,
         insert_stmt: sa.Insert,
