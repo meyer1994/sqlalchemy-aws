@@ -247,15 +247,15 @@ class DynamoDialect(default.DefaultDialect):
 
     def _describe_table(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         name: str,
     ) -> TableDescriptionTypeDef:
-        response = connection.connection.client.describe_table(TableName=name)
+        response = connection.connection.client.describe_table(TableName=name)  # type: ignore
         return response["Table"]
 
     def has_table(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -265,7 +265,7 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_columns(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -298,17 +298,17 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_table_names(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         schema: str | None = None,
         **kw,
     ) -> list[str]:
         logger.info("get_table_names() called")
-        tables = connection.connection.client.list_tables()
+        tables = connection.connection.client.list_tables()  # type: ignore
         return tables["TableNames"]
 
     def get_pk_constraint(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -336,7 +336,7 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_foreign_keys(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -346,7 +346,7 @@ class DynamoDialect(default.DefaultDialect):
 
     def get_indexes(
         self,
-        connection: dbapi.Connection,
+        connection: sa.Connection,
         table_name: str,
         schema: str | None = None,
         **kw,
@@ -354,7 +354,7 @@ class DynamoDialect(default.DefaultDialect):
         logger.info("get_indexes() called")
 
         table = self._describe_table(connection, table_name)
-        indexes = []
+        indexes: list[sa.engine.interfaces.ReflectedIndex] = []
 
         # Global Secondary Indexes
         for idx in table["GlobalSecondaryIndexes"] or []:
